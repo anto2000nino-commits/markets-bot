@@ -192,7 +192,7 @@ async def send_market_update(session_type, header_emoji, header_text):
 🤖 <b>ANALISI AI</b>
 {analysis}
 
-<i>BullVision Markets Bot 📊</i>"""
+<i>AI MarketsAnalysis 📊</i>"""
 
         await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
         logger.info(f"Sent {session_type} update")
