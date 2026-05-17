@@ -4,7 +4,7 @@ import os
 import requests
 import yfinance as yf
 import pytz
-from datetime import datetime, timedelta
+from datetime import datetime
 from telegram import Bot
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 import anthropic
@@ -21,65 +21,46 @@ ITALY_TZ = pytz.timezone("Europe/Rome")
 bot = Bot(token=BOT_TOKEN)
 client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
-DISCLAIMER = "\n\n⚠️ <i>Contenuto generato da AI. Potrebbe contenere errori. Non costituisce consiglio finanziario. Fai sempre le tue valutazioni personali.</i>"
-
-SYMBOLS_WEEKDAY = {
-    "metalli": {
-        "Oro (XAU/USD)": "GC=F",
-        "Argento (XAG/USD)": "SI=F",
-        "Platino": "PL=F",
-        "Rame": "HG=F",
-    },
-    "forex": {
-        "EUR/USD": "EURUSD=X",
-        "GBP/USD": "GBPUSD=X",
-        "USD/JPY": "JPY=X",
-        "USD/CHF": "CHF=X",
-    },
-    "indici": {
-        "S&P 500": "^GSPC",
-        "Nasdaq": "^IXIC",
-        "FTSE 100": "^FTSE",
-        "DAX": "^GDAXI",
-    },
-}
-
-SYMBOLS_WEEKEND = {
-    "metalli": {
-        "Oro (XAU/USD)": "GC=F",
-        "Argento (XAG/USD)": "SI=F",
-        "Platino": "PL=F",
-        "Rame": "HG=F",
-    },
-}
+DISCLAIMER = "⚠️ <i>Contenuto generato da AI. Non costituisce consiglio finanziario. Fai sempre le tue valutazioni.</i>"
+SEPARATOR = "━━━━━━━━━━━━━━━"
 
 def is_weekend():
     return datetime.now(ITALY_TZ).weekday() >= 5
 
-def get_symbols():
-    return SYMBOLS_WEEKEND if is_weekend() else SYMBOLS_WEEKDAY
-
 def get_market_data():
     data = {}
-    symbols = get_symbols()
-    for category, syms in symbols.items():
-        for name, ticker in syms.items():
-            try:
-                t = yf.Ticker(ticker)
-                info = t.fast_info
-                price = info.last_price
-                prev_close = info.previous_close
-                change = ((price - prev_close) / prev_close) * 100 if prev_close else 0
-                data[name] = {"price": price, "change": change, "prev_close": prev_close}
-            except Exception as e:
-                logger.error(f"Error fetching {name}: {e}")
+    tickers = {
+        "Oro (XAU)": "GC=F",
+        "Argento (XAG)": "SI=F",
+        "EUR/USD": "EURUSD=X",
+        "GBP/USD": "GBPUSD=X",
+        "S&P 500": "^GSPC",
+        "Nasdaq": "^IXIC",
+        "Apple": "AAPL",
+        "Meta": "META",
+    }
+    if is_weekend():
+        tickers = {
+            "Oro (XAU)": "GC=F",
+            "Argento (XAG)": "SI=F",
+        }
+    for name, ticker in tickers.items():
+        try:
+            t = yf.Ticker(ticker)
+            info = t.fast_info
+            price = info.last_price
+            prev_close = info.previous_close
+            change = ((price - prev_close) / prev_close) * 100 if prev_close else 0
+            data[name] = {"price": price, "change": change}
+        except Exception as e:
+            logger.error(f"Error fetching {name}: {e}")
     return data
 
 def get_crypto_data():
     try:
         url = "https://api.coingecko.com/api/v3/simple/price"
         params = {
-            "ids": "bitcoin,ethereum,binancecoin,solana",
+            "ids": "bitcoin,ethereum",
             "vs_currencies": "usd",
             "include_24hr_change": "true",
         }
@@ -88,8 +69,6 @@ def get_crypto_data():
         return {
             "Bitcoin (BTC)": {"price": data["bitcoin"]["usd"], "change": data["bitcoin"]["usd_24h_change"]},
             "Ethereum (ETH)": {"price": data["ethereum"]["usd"], "change": data["ethereum"]["usd_24h_change"]},
-            "BNB": {"price": data["binancecoin"]["usd"], "change": data["binancecoin"]["usd_24h_change"]},
-            "Solana (SOL)": {"price": data["solana"]["usd"], "change": data["solana"]["usd_24h_change"]},
         }
     except Exception as e:
         logger.error(f"Error fetching crypto: {e}")
@@ -101,168 +80,116 @@ def get_economic_events():
         url = f"https://financialmodelingprep.com/api/v3/economic_calendar?from={today}&to={today}&apikey={FMP_API_KEY}"
         resp = requests.get(url, timeout=10)
         events = resp.json()
-        filtered = []
-        for e in events:
-            if e.get("impact") in ["High", "Medium"]:
-                filtered.append(e)
-        return filtered
+        return [e for e in events if e.get("impact") in ["High", "Medium"]]
     except Exception as e:
-        logger.error(f"Error fetching economic events: {e}")
+        logger.error(f"Error fetching events: {e}")
         return []
 
-def format_market_summary(market_data, crypto_data):
+def format_prices(market_data, crypto_data):
     lines = []
-    symbols = get_symbols()
-    emoji_map = {"metalli": "🥇", "forex": "💱", "indici": "📊"}
-    name_map = {"metalli": "METALLI", "forex": "FOREX", "indici": "INDICI"}
-    for category in symbols:
-        lines.append(f"\n{emoji_map[category]} <b>{name_map[category]}</b>")
-        for name in symbols[category]:
-            if name in market_data:
-                d = market_data[name]
-                arrow = "🟢" if d["change"] >= 0 else "🔴"
-                sign = "+" if d["change"] >= 0 else ""
-                lines.append(f"{arrow} {name}: <b>{d['price']:.4f}</b> ({sign}{d['change']:.2f}%)")
+
+    metalli = {k: v for k, v in market_data.items() if k in ["Oro (XAU)", "Argento (XAG)"]}
+    forex = {k: v for k, v in market_data.items() if k in ["EUR/USD", "GBP/USD"]}
+    indici = {k: v for k, v in market_data.items() if k in ["S&P 500", "Nasdaq"]}
+    azionario = {k: v for k, v in market_data.items() if k in ["Apple", "Meta"]}
+
+    if metalli:
+        lines.append("🥇 <b>METALLI</b>")
+        for name, d in metalli.items():
+            arrow = "🟢" if d["change"] >= 0 else "🔴"
+            sign = "+" if d["change"] >= 0 else ""
+            lines.append(f"{arrow} {name}: <b>{d['price']:.2f}</b> ({sign}{d['change']:.2f}%)")
+
+    if forex:
+        lines.append("\n💱 <b>FOREX</b>")
+        for name, d in forex.items():
+            arrow = "🟢" if d["change"] >= 0 else "🔴"
+            sign = "+" if d["change"] >= 0 else ""
+            lines.append(f"{arrow} {name}: <b>{d['price']:.4f}</b> ({sign}{d['change']:.2f}%)")
+
+    if indici:
+        lines.append("\n📊 <b>INDICI</b>")
+        for name, d in indici.items():
+            arrow = "🟢" if d["change"] >= 0 else "🔴"
+            sign = "+" if d["change"] >= 0 else ""
+            lines.append(f"{arrow} {name}: <b>{d['price']:,.2f}</b> ({sign}{d['change']:.2f}%)")
+
+    if azionario:
+        lines.append("\n🏢 <b>AZIONARIO</b>")
+        for name, d in azionario.items():
+            arrow = "🟢" if d["change"] >= 0 else "🔴"
+            sign = "+" if d["change"] >= 0 else ""
+            lines.append(f"{arrow} {name}: <b>${d['price']:.2f}</b> ({sign}{d['change']:.2f}%)")
+
     if crypto_data:
         lines.append("\n🪙 <b>CRYPTO</b>")
         for name, d in crypto_data.items():
             arrow = "🟢" if d["change"] >= 0 else "🔴"
             sign = "+" if d["change"] >= 0 else ""
             lines.append(f"{arrow} {name}: <b>${d['price']:,.2f}</b> ({sign}{d['change']:.2f}%)")
+
     return "\n".join(lines)
 
-def get_ai_analysis(market_data, crypto_data, session_type):
-    summary = format_market_summary(market_data, crypto_data)
-    weekend_note = "\nNota: è weekend, i mercati forex e gli indici sono chiusi. Concentrati su metalli e crypto." if is_weekend() else ""
+def get_ai_analysis(market_data, crypto_data, session_type, events):
+    prices_text = format_prices(market_data, crypto_data)
 
-    istruzioni = f"""Sei un analista finanziario senior che scrive per trader professionisti su Telegram.
-Usa SOLO dati reali forniti qui sotto. NON inventare prezzi, livelli o previsioni non supportate dai dati.
-Scrivi in italiano corretto e professionale.
-Usa ESCLUSIVAMENTE tag HTML Telegram: <b>grassetto</b>, <i>corsivo</i>. NON usare asterischi ** né cancelletti #.
-Ogni titolo sezione in <b>grassetto</b>.
-Sii preciso, concreto e utile. Cita i livelli numerici reali dai dati forniti.
-Concludi SEMPRE con <b>💡 Osservazione Chiave</b>: un'analisi tecnica o macro originale basata sui dati reali.{weekend_note}"""
+    events_text = ""
+    if events:
+        events_text = "\n\nEventi economici di oggi:\n"
+        for e in events[:5]:
+            impact = "🔴" if e.get("impact") == "High" else "🟡"
+            events_text += f"{impact} {e.get('event')} ({e.get('country')}) — Atteso: {e.get('estimate', 'N/D')} — Precedente: {e.get('previous', 'N/D')}\n"
 
-    prompts = {
-        "morning": f"""{istruzioni}
+    weekend_note = "\nÈ weekend. Forex e indici sono chiusi. Analizza solo metalli e crypto." if is_weekend() else ""
 
-Dati di mercato attuali:
-{summary}
-
-Analizza l'apertura dei mercati europei con queste sezioni:
-<b>📊 Sentiment e Contesto Macro</b>
-Analisi del sentiment basata sui movimenti reali dei dati sopra. Cita i valori numerici specifici.
-
-<b>🥇 Metalli Preziosi</b>
-Analisi tecnica di oro e argento con i livelli attuali. Supporti e resistenze chiave.
-
-<b>💱 Forex</b>
-I movimenti forex più significativi con i livelli esatti. Cosa guida i movimenti.
-
-<b>🪙 Crypto</b>
-Sentiment crypto e correlazioni con il risk-on/risk-off generale.
-
-<b>💡 Osservazione Chiave</b>
-Un'analisi originale e concreta basata sui numeri reali.
-
-Massimo 280 parole. Zero generalità, solo analisi basata sui dati.""",
-
-        "wallstreet": f"""{istruzioni}
-
-Dati di mercato attuali:
-{summary}
-
-Analizza l'apertura di Wall Street con queste sezioni:
-<b>🇺🇸 Sentiment Pre-Market</b>
-Analisi basata sui futures e sugli indici europei già aperti. Cita i valori.
-
-<b>📈 Indici e Livelli Chiave</b>
-S&P 500, Nasdaq, FTSE, DAX — analisi tecnica con i livelli attuali dai dati.
-
-<b>🥇 Metalli e Dollaro</b>
-Come si stanno muovendo oro e forex rispetto all'apertura americana.
-
-<b>💡 Osservazione Chiave</b>
-Pattern tecnico o correlazione macro concreta basata sui dati reali.
-
-Massimo 280 parole. Zero generalità, solo analisi basata sui dati.""",
-
-        "recap": f"""{istruzioni}
-
-Dati di mercato attuali:
-{summary}
-
-Recap pomeridiano con queste sezioni:
-<b>🌍 Sessione Europea — Bilancio</b>
-Come ha chiuso la sessione europea. Cita i valori numerici dei movimenti.
-
-<b>🥇 Metalli e Materie Prime</b>
-Analisi dei movimenti di oro, argento, platino e rame con i livelli attuali.
-
-<b>🪙 Crypto nel Pomeriggio</b>
-Situazione crypto con i prezzi reali e le variazioni percentuali.
-
-<b>💡 Osservazione Chiave</b>
-Cosa dicono i dati sulla direzione del mercato per la chiusura e domani.
-
-Massimo 280 parole. Zero generalità, solo analisi basata sui dati.""",
-
-        "close": f"""{istruzioni}
-
-Dati di mercato attuali:
-{summary}
-
-Analisi di chiusura con queste sezioni:
-<b>🌙 Bilancio della Giornata</b>
-Recap numerico preciso: chi ha guadagnato, chi ha perso e quanto.
-
-<b>🏆 Asset del Giorno</b>
-Il miglior e il peggior asset della giornata con dati reali e motivazione.
-
-<b>🔭 Outlook per Domani</b>
-Cosa monitorare domani basandosi sui livelli tecnici attuali reali.
-
-<b>💡 Osservazione Chiave</b>
-Un pattern o una correlazione emersa oggi dai dati che vale la pena tenere a mente.
-
-Massimo 280 parole. Zero generalità, solo analisi basata sui dati.""",
-
-        "weekend": f"""{istruzioni}
-
-Dati di mercato (weekend — solo metalli e crypto attivi):
-{summary}
-
-Analisi weekend con queste sezioni:
-<b>🥇 Metalli Preziosi — Situazione Attuale</b>
-Analisi tecnica di oro e argento con i livelli reali. Dove si trovano rispetto ai supporti chiave.
-
-<b>🪙 Crypto Weekend</b>
-Analisi del mercato crypto con prezzi e variazioni reali. Trend in atto.
-
-<b>🔭 Cosa Monitorare Lunedì</b>
-I livelli tecnici chiave e gli eventi macro della prossima settimana da tenere d'occhio.
-
-<b>💡 Osservazione Chiave</b>
-Un'analisi originale basata sui movimenti del weekend.
-
-Massimo 280 parole. Zero generalità, solo analisi basata sui dati.""",
+    session_labels = {
+        "morning": "apertura dei mercati europei",
+        "wallstreet": "apertura di Wall Street",
+        "recap": "recap pomeridiano",
+        "close": "chiusura dei mercati",
     }
+    session_label = session_labels.get(session_type, "aggiornamento mercati")
 
-    session = "weekend" if is_weekend() else session_type
+    prompt = f"""Sei un analista finanziario senior. Scrivi un'analisi professionale per trader per {session_label}.
+
+DATI REALI IN QUESTO MOMENTO:
+{prices_text}
+{events_text}{weekend_note}
+
+REGOLE FONDAMENTALI:
+- Usa SOLO i dati numerici forniti sopra. NON inventare prezzi o livelli non presenti.
+- Scrivi in italiano corretto e professionale.
+- Usa SOLO tag HTML Telegram: <b>grassetto</b>, <i>corsivo</i>. ZERO asterischi, ZERO cancelletti.
+- Sii concreto: cita sempre i valori numerici reali.
+- Massimo 200 parole totali.
+
+STRUTTURA OBBLIGATORIA:
+
+<b>📊 Quadro Generale</b>
+3-4 frasi sul sentiment complessivo basate sui movimenti reali. Cita i numeri.
+
+<b>🔍 Asset in Evidenza</b>
+2-3 asset specifici con i loro livelli reali e cosa significa tecnicamente o macro.
+
+<b>🔮 Come Potrebbero Comportarsi</b>
+Scenario probabile per le prossime ore basato sui dati attuali. Sii diretto ma onesto sull'incertezza.
+
+<b>💡 Osservazione Chiave</b>
+Una sola riga. L'elemento più importante da tenere d'occhio oggi."""
 
     try:
         resp = client.messages.create(
             model="claude-sonnet-4-6",
-            max_tokens=700,
-            messages=[{"role": "user", "content": prompts[session]}],
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}],
         )
         return resp.content[0].text
     except Exception as e:
         logger.error(f"AI analysis error: {e}")
-        return "<i>Analisi AI temporaneamente non disponibile.</i>"
+        return "<i>Analisi temporaneamente non disponibile.</i>"
 
 def get_ai_event_analysis(event):
-    nome = event.get("event", "Evento sconosciuto")
+    nome = event.get("event", "")
     paese = event.get("country", "")
     ora = event.get("date", "")
     actual = event.get("actual", "N/D")
@@ -270,33 +197,35 @@ def get_ai_event_analysis(event):
     precedente = event.get("previous", "N/D")
     impatto = event.get("impact", "")
 
-    prompt = f"""Sei un analista finanziario senior. Analizza questo evento economico reale per i trader.
+    prompt = f"""Sei un analista finanziario senior. Analizza questo evento economico reale.
 
 Evento: {nome}
 Paese: {paese}
 Orario: {ora}
-Valore attuale: {actual}
-Stima consensus: {stima}
-Valore precedente: {precedente}
+Dato uscito: {actual}
+Consensus atteso: {stima}
+Precedente: {precedente}
 Impatto: {impatto}
 
-Scrivi in italiano corretto e professionale.
-Usa SOLO tag HTML Telegram: <b>grassetto</b>, <i>corsivo</i>. NON usare asterischi né cancelletti.
+REGOLE:
+- Scrivi in italiano corretto e professionale.
+- Usa SOLO tag HTML Telegram: <b>grassetto</b>, <i>corsivo</i>. ZERO asterischi, ZERO cancelletti.
+- Massimo 180 parole.
+- Se il dato non è ancora uscito (actual = N/D), analizza cosa aspettarsi.
 
-Struttura:
+STRUTTURA:
+
 <b>📌 Cos'è e Perché Conta</b>
-Spiegazione concisa dell'indicatore e della sua rilevanza per i mercati.
+Spiegazione concisa dell'indicatore e impatto sui mercati.
 
-<b>📊 Dato Reale vs Attese</b>
-Commenta il dato uscito rispetto al consensus e al precedente. Sii preciso con i numeri.
+<b>📊 Dato vs Attese</b>
+Commento numerico preciso: sopra, sotto o in linea con il consensus.
 
-<b>⚡ Impatto Atteso sui Mercati</b>
-Come potrebbero reagire forex, indici e metalli. Sii specifico: quale direzione e perché.
+<b>⚡ Reazione Attesa</b>
+Come reagiranno forex, indici, oro. Sii specifico con direzione e motivazione.
 
 <b>⚠️ Livelli da Monitorare</b>
-Gli asset più sensibili a questo dato con i livelli tecnici chiave da tenere d'occhio.
-
-Massimo 200 parole. Analisi concreta, niente generalità."""
+Gli asset più sensibili con i livelli tecnici chiave."""
 
     try:
         resp = client.messages.create(
@@ -306,32 +235,48 @@ Massimo 200 parole. Analisi concreta, niente generalità."""
         )
         return resp.content[0].text
     except Exception as e:
-        logger.error(f"AI event analysis error: {e}")
+        logger.error(f"AI event error: {e}")
         return "<i>Analisi evento non disponibile.</i>"
 
 async def send_market_update(session_type, header_emoji, header_text):
     if is_weekend() and session_type in ["wallstreet", "recap"]:
         logger.info(f"Skipping {session_type} — weekend")
         return
-
     try:
         market_data = get_market_data()
         crypto_data = get_crypto_data()
+        events = get_economic_events()
         now = datetime.now(ITALY_TZ).strftime("%d/%m/%Y %H:%M")
-        summary = format_market_summary(market_data, crypto_data)
-        analysis = get_ai_analysis(market_data, crypto_data, session_type)
+        prices = format_prices(market_data, crypto_data)
 
-        message = f"""{header_emoji} <b>{header_text}</b>
-🕐 {now}
-{summary}
+        msg1 = f"""{header_emoji} <b>{header_text}</b>
+📅 {now}
+{SEPARATOR}
 
-🤖 <b>ANALISI AI</b>
-{analysis}{DISCLAIMER}
+{prices}
 
+{SEPARATOR}
 <i>AI MarketsAnalysis 📊</i>"""
 
-        await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
-        logger.info(f"Sent {session_type} update")
+        await bot.send_message(chat_id=CHAT_ID, text=msg1, parse_mode="HTML")
+        logger.info(f"Sent prices for {session_type}")
+
+        await asyncio.sleep(6)
+
+        analysis = get_ai_analysis(market_data, crypto_data, session_type, events)
+
+        msg2 = f"""🤖 <b>ANALISI MERCATI</b>
+{SEPARATOR}
+
+{analysis}
+
+{SEPARATOR}
+{DISCLAIMER}
+<i>AI MarketsAnalysis 📊</i>"""
+
+        await bot.send_message(chat_id=CHAT_ID, text=msg2, parse_mode="HTML")
+        logger.info(f"Sent analysis for {session_type}")
+
     except Exception as e:
         logger.error(f"Error sending {session_type} update: {e}")
 
@@ -340,8 +285,6 @@ async def check_and_send_events():
         return
     try:
         events = get_economic_events()
-        if not events:
-            return
         now = datetime.now(ITALY_TZ)
         for event in events:
             try:
@@ -350,16 +293,24 @@ async def check_and_send_events():
                     continue
                 event_time = datetime.fromisoformat(event_time_str.replace("Z", "+00:00")).astimezone(ITALY_TZ)
                 diff = (event_time - now).total_seconds()
-                if event.get("actual") and abs(diff) < 3600:
+                if event.get("actual") and abs(diff) < 1800:
                     analysis = get_ai_event_analysis(event)
                     impact_emoji = "🔴" if event.get("impact") == "High" else "🟡"
-                    message = f"""{impact_emoji} <b>EVENTO ECONOMICO — {event.get('event', '').upper()}</b>
+
+                    msg = f"""{impact_emoji} <b>EVENTO ECONOMICO</b>
+{SEPARATOR}
+📌 <b>{event.get('event', '').upper()}</b>
 🌍 {event.get('country', '')} | 🕐 {event_time.strftime('%H:%M')}
 
-{analysis}{DISCLAIMER}
+📊 Atteso: <b>{event.get('estimate', 'N/D')}</b> | Uscito: <b>{event.get('actual', 'N/D')}</b> | Precedente: <b>{event.get('previous', 'N/D')}</b>
 
+{analysis}
+
+{SEPARATOR}
+{DISCLAIMER}
 <i>AI MarketsAnalysis 📊</i>"""
-                    await bot.send_message(chat_id=CHAT_ID, text=message, parse_mode="HTML")
+
+                    await bot.send_message(chat_id=CHAT_ID, text=msg, parse_mode="HTML")
                     logger.info(f"Sent event: {event.get('event')}")
             except Exception as e:
                 logger.error(f"Error processing event: {e}")
