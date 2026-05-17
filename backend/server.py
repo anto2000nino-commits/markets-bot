@@ -270,7 +270,6 @@ async def send_market_update(session_type, header_emoji, header_text):
 
 {analysis}
 
-{SEPARATOR}
 {DISCLAIMER}
 <i>AI MarketsAnalysis 📊</i>"""
 
